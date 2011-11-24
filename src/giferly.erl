@@ -1,4 +1,37 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 
+% giferly - a GIF 89a decoder
+%   - by Avik Das <avikstrange@gmail.com>
+% 
+% A standalone program to decode and display a GIF file. This is my attempt to
+% learn both the GIF 89a format and Erlang. This project started by my
+% encountering an article describing the GIF format, in essence as a summary of
+% some of the more fundamental parts of the official specification of the
+% format.  While this task would have been fairly straightforward in Ruby, C or
+% some other language I am familiar with, I decided to implement the decoder in
+% Erlang in order to learn the language.
+% 
+% This program only depends on Esdl, an Erlang binding to the Simple
+% DirectMedia Layer, to display the decoded image. Other than that, the entire
+% parsing is implemented from scratch in Erlang. While Erlang may not
+% necessarily be the ideal choice for this task, it is an interesting exercise
+% to attempt this in a functional style, and taking advantage of Erlang's
+% binary data manipulation features.
+% 
+% References:
+%  * The article that piqued my interest:
+%    - http://matthewflickinger.com/lab/whatsinagif/bits_and_bytes.asp
+%  * The official specification of the GIF 89a format:
+%    - http://www.w3.org/Graphics/GIF/spec-gif89a.txt
+%  * The book I'm using to learn Erlang:
+%    - http://learnyousomeerlang.com/contents
+% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% TODO: License
+
 -module(giferly).
+-author('Avik Das <avikstrange@gmail.com>').
 -export([go/0]).
 
 -include("sdl.hrl").
@@ -83,9 +116,31 @@ go() ->
 % Flow:
 %  1. If header not valid, exit.
 %  2. Read width/height
-parse_data(Data) ->
-    io:format("~p~n", [Data]),
+parse_data(<<Header:6/bytes, Rest/binary>>) ->
+    io:format("~p~n", [<<Header:6/bytes, Rest/binary>>]),
+
+    HeaderValid = header_valid(Header),
+    if
+         HeaderValid ->
+            parse_logical_screen_descriptor(Rest);
+        true                 ->
+            io:format("Invalid header: ~P~n", [Header]),
+            error
+    end.
+
+parse_logical_screen_descriptor(<<Lsd:7/bytes, Rest/binary>>) ->
+    % TODO: parse selectively?
+    ParsedLsd =
+        {screen_dim(Lsd),
+         {global_color_table, global_color_table_flag(Lsd)},
+         {color_depth, color_depth(Lsd)},
+         {global_color_table_size, global_color_table_size(Lsd)},
+         {background_color_index, background_color_index(Lsd)}},
+
+    io:format("~p~n", [ParsedLsd]),
+    % TODO: keep parsing
     ok.
+
 
 init_sdl(ParsedData) ->
     case init_video(ParsedData) of
