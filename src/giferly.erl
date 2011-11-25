@@ -81,7 +81,7 @@ color_depth(<<_:32, _:1, Depth:3, _:20>>) ->
 
 % The final three bits specify the size of the global color table as calculated
 % by the the formula: size = 2^(N+1), where N is the value of the three bits in
-% question.
+% question. The size reported is the number of colors in the table.
 global_color_table_size(<<_:32, _:5, N:3, _:16>>) ->
     round(math:pow(2, N + 1)).
 
@@ -98,7 +98,32 @@ background_color_index(<<_:40, Index:8, _:8>>) ->
 
 % ~~ GLOBAL COLOR TABLE ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-% TODO
+-record(color, {r, g, b}).
+
+% The global color table immediately follows the logical screen descriptor if
+% the global color table flag is set. If so, then the size of the color table,
+% also in the logical screen descriptor, specifies the number of colors in the
+% table. Each color takes up three bytes, representing the red, green and blue
+% components respectively.
+
+color_table(_, 0, ParsedColors) ->
+    ParsedColors;
+
+color_table(BinData, NumColorsLeft, ParsedColors) ->
+    <<R:8, G:8, B:8, Rest/binary>> = BinData,
+    NewParsedColors = [#color{r=R, g=G, b=B}|ParsedColors],
+
+    color_table(Rest, NumColorsLeft - 1, NewParsedColors).
+
+% The local color table, described later, is identical in structure to the
+% global color table, and so can use the same parser.
+global_color_table(BinData, NumColors) ->
+    color_table(BinData, NumColors, []).
+
+% == PARSED RECORD STRUCTURE ==================================================
+
+% TODO: more data
+-record(parsed_gif, {w, h, color_depth, colors=[]}).
 
 % == MAIN ROUTINES ============================================================
 
@@ -110,12 +135,6 @@ go() ->
             error
     end.
 
-% Final output:
-%  {{w, W}, {h, H},
-%   {???}}
-% Flow:
-%  1. If header not valid, exit.
-%  2. Read width/height
 parse_data(<<Header:6/bytes, Rest/binary>>) ->
     io:format("~p~n", [<<Header:6/bytes, Rest/binary>>]),
 
@@ -129,18 +148,44 @@ parse_data(<<Header:6/bytes, Rest/binary>>) ->
     end.
 
 parse_logical_screen_descriptor(<<Lsd:7/bytes, Rest/binary>>) ->
-    % TODO: parse selectively?
-    ParsedLsd =
-        {screen_dim(Lsd),
-         {global_color_table, global_color_table_flag(Lsd)},
-         {color_depth, color_depth(Lsd)},
-         {global_color_table_size, global_color_table_size(Lsd)},
-         {background_color_index, background_color_index(Lsd)}},
+    ParsedData = #parsed_gif{},
 
-    io:format("~p~n", [ParsedLsd]),
-    % TODO: keep parsing
+    case {screen_dim(Lsd), color_depth(Lsd)} of
+        {{{w, W}, {h, H}}, ColorDepth} ->
+            ParsedDataWH =
+                ParsedData#parsed_gif{w=W, h=H, color_depth=ColorDepth}
+    end,
+    io:format("~p~n", [ParsedDataWH]),
+
+    case global_color_table_flag(Lsd) of
+        true  ->
+            GCTableSize = global_color_table_size(Lsd),
+            BGIndex     = background_color_index (Lsd),
+
+            parse_global_color_table(Rest, ParsedDataWH,
+                {{gc_table_size, GCTableSize},
+                 {bg_index,      BGIndex    }});
+        false ->
+            parse_graphics_control_extension(Rest, ParsedDataWH)
+    end.
+
+parse_global_color_table(BinData, ParsedData,
+    {{gc_table_size, GCTableSize},
+     {bg_index     , BGIndex    }}) ->
+    GCTableByteLen = GCTableSize * 3,
+    <<BinGCTable:GCTableByteLen/bytes, Rest/binary>> = BinData,
+
+    GCTable = global_color_table(BinGCTable, GCTableSize),
+    ParsedDataGC = ParsedData#parsed_gif{colors=GCTable},
+
+    % TODO: preserve BGIndex
+
+    io:format("~p~n", [ParsedDataGC]),
+    parse_graphics_control_extension(Rest, ParsedDataGC).
+
+parse_graphics_control_extension(BinData, ParsedData) ->
+    % TODO
     ok.
-
 
 init_sdl(ParsedData) ->
     case init_video(ParsedData) of
