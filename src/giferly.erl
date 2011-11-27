@@ -120,10 +120,134 @@ color_table(BinData, NumColorsLeft, ParsedColors) ->
 global_color_table(BinData, NumColors) ->
     color_table(BinData, NumColors, []).
 
+% ~~ EXTENSION BLOCKS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+% An number of extension blocks may appear in the data stream. All of these
+% extensions are signalled by the first byte of the block, which is always
+% "0x21". The approach here will be to ignore the ones that are not pertinent
+% to this application, which will still require recognzing the blocks and
+% skipping over the contained data.
+
+% The graphics control extension may appear only once, if at all, before a
+% graphic rendering block, but we won't bother checking that.
+read_all_extension_blocks(BinData) ->
+    case BinData of
+        <<16#21, _/binary>> ->
+            NewBinData = extension_block(BinData),
+            read_all_extension_blocks(NewBinData);
+        _                      ->
+            BinData
+    end.
+
+% --- Graphics Control Extension ----------------------------------------------
+
+% Technically, the block has a size field, and a block terminator, but in this
+% case, the block has a constant size, with a fixed structure.
+extension_block(<<16#21f904:24,
+    Packed:8, DelayTime:16/little, TransparentIndex:8,
+    0:8, Rest/binary>>) ->
+    % TODO: parse packed byte
+    % TODO: preserve the extracted data
+
+    Rest;
+
+% --- Comment Extension -------------------------------------------------------
+
+extension_block(<<16#21fe:16, BinData/binary>>) ->
+    <<Size:8, CommentRest/binary>> = BinData,
+    <<Comment:Size/bytes, 0, Rest/binary>> = CommentRest,
+    io:format("Comment: ~s~n", [Comment]),
+
+    Rest.
+
+% == IMAGE DESCRIPTOR =========================================================
+
+% A single GIF file may contain multiple images (this is used in animated GIFs)
+% and ech such image begins with an image descriptor block. The first byte of
+% the image descriptor is the image separotor with a value of "2C". This will
+% be matched by all of the functions below.
+
+% A single image need not take up the entire canvas, so the first two bytes and
+% the second two bytes specify the left offset and the top offset respectively.
+% The third two bytes and the fourth two bytes are the width and the height
+% respectively. Each is specified with the least significant byte first.
+image_descriptor_dim(<<16#2c,
+    L:16/little, T:16/little,
+    W:16/little, H:16/little,
+    _:8>>) -> {{l, L}, {t, T}, {w, W}, {h, H}}.
+
+% The last byte of the image descriptor is a packed field. The first bit is the
+% local color table flag, which is "1" when the following image data has a
+% local color table immediately following the image descriptor.
+local_color_table_flag(<<16#2c, _:64/bits, 1:1, _:7>>) ->
+    true;
+local_color_table_flag(<<16#2c, _:64/bits, 0:1, _:7>>) ->
+    false.
+
+% The second bit is the interlace flag.
+% TODO?
+
+% The third flag is the sort flag, which functions just like in the case of the
+% logical screen descriptor, with a value of "1" stating that the local color
+% table is sorted by "decreasing importance". Again, this can be ignored, as we
+% will do.
+
+% The fourth and fifth bits are reserved.
+
+% The last three bits specify the size of the local color table. Again, the
+% size is calculated by the the formula: size = 2^(N+1), where N is the value
+% of the three bits in question. The size reported is the number of colors in
+% the table.
+local_color_table_size(<<16#2c, _:69/bits, N:3>>) ->
+    round(math:pow(2, N + 1)).
+
+% The local color table immediately follows the image descriptor if the local
+% color table flag is set and is identical in structure to the global color
+% table. So can use the same parser.
+local_color_table(BinData, NumColors) ->
+    color_table(BinData, NumColors, []).
+
+% == IMAGE DATA ===============================================================
+
+% The image data block contains LZW-encoded data that, when decoded, determines
+% the colors to display on a canvas. The first few functions below are relevant
+% to the structure of the block itself, and the meanings of the pertinent terms
+% are explained in the LZW compression section following those functions.
+
+% The first byte of the image data is the LZW minimum code size.
+lzw_minimum_code_size(<<Size:8, _/binary>>) ->
+    Size.
+
+% The rest of the block is grouped into data sub-blocks. Each sub-block starts
+% with a single byte stating the number of bytes of data in the following
+% sub-block, followed by that many bytes of data.
+image_data_all_sub_blocks(BinData) ->
+    image_data_next_sub_block(BinData, <<>>).
+
+image_data_next_sub_block(<<   0:8, Rest/binary>>, SubBlocks) ->
+    {SubBlocks, Rest};
+image_data_next_sub_block(<<Size:8, Rest/binary>>, SubBlocks) ->
+    <<Block:Size/bytes, RemainingSubBlocks/binary>> = Rest,
+    SubBlocksNew = <<SubBlocks/binary, Block/binary>>,
+    image_data_next_sub_block(RemainingSubBlocks, SubBlocksNew).
+
+% ~~ LZW Decompression ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+lzw_decode(LZWMinCodeSize, ImageData) ->
+    ImageData.
+
+% == TRAILER ==================================================================
+
+% The final byte of the file constitutes the trailer block, which indicates
+% that no more data follows. The block is always the byte "3b".
+end_of_file(<<16#3b>>) -> true ;
+end_of_file(_        ) -> false.
+
 % == PARSED RECORD STRUCTURE ==================================================
 
 % TODO: more data
--record(parsed_gif, {w, h, color_depth, colors=[]}).
+-record(parsed_gif, {w, h, color_depth, colors=[], images=[]}).
+-record(parsed_img, {l, t, w, h, colors=[], data=[]}).
 
 % == MAIN ROUTINES ============================================================
 
@@ -166,7 +290,7 @@ parse_logical_screen_descriptor(<<Lsd:7/bytes, Rest/binary>>) ->
                 {{gc_table_size, GCTableSize},
                  {bg_index,      BGIndex    }});
         false ->
-            parse_graphics_control_extension(Rest, ParsedDataWH)
+            parse_extension_blocks(Rest, ParsedDataWH)
     end.
 
 parse_global_color_table(BinData, ParsedData,
@@ -181,11 +305,64 @@ parse_global_color_table(BinData, ParsedData,
     % TODO: preserve BGIndex
 
     io:format("~p~n", [ParsedDataGC]),
-    parse_graphics_control_extension(Rest, ParsedDataGC).
+    parse_extension_blocks(Rest, ParsedDataGC).
 
-parse_graphics_control_extension(BinData, ParsedData) ->
-    % TODO
-    ok.
+parse_extension_blocks(BinData, ParsedData) ->
+    Rest = read_all_extension_blocks(BinData),
+    % TODO: actually retrieve some parsed data, when available, and use it
+
+    parse_image_descriptor(Rest, ParsedData).
+
+parse_image_descriptor(BinData, ParsedData) ->
+    Eof = end_of_file(BinData),
+    if Eof ->
+        io:format("Done!~n"),
+        ok;
+       true ->
+        io:format("lol~n"),
+
+        <<ImDesc:10/bytes, Rest/binary>> = BinData,
+        {{l, L}, {t, T}, {w, W}, {h, H}} = image_descriptor_dim(ImDesc),
+        ParsedImage = #parsed_img{l=L, t=T, w=W, h=H},
+
+        io:format("~p~n", [ImDesc]),
+        case local_color_table_flag(ImDesc) of
+            true  ->
+                LCTableSize = local_color_table_size(ImDesc),
+                BGIndex     = background_color_index(ImDesc),
+
+                parse_local_color_table(Rest, ParsedData, ParsedImage,
+                    {{lc_table_size, LCTableSize},
+                     {bg_index,      BGIndex    }});
+            false ->
+                parse_image_data(Rest, ParsedData, ParsedImage)
+        end
+    end.
+
+parse_local_color_table(BinData, ParsedData, ParsedImage,
+    {{lc_table_size, LCTableSize},
+     {bg_index     , BGIndex    }}) ->
+    LCTableByteLen = LCTableSize * 3,
+    <<BinLCTable:LCTableByteLen/bytes, Rest/binary>> = BinData,
+
+    LCTable = local_color_table(BinLCTable, LCTableSize),
+    ParsedImageLC = ParsedImage#parsed_img{colors=LCTable},
+
+    % TODO: preserve BGIndex
+
+    parse_image_data(Rest, ParsedData, ParsedImageLC).
+
+parse_image_data(BinData, ParsedData, ParsedImage) ->
+    <<LZWMinCodeSize:8, SubBlocks/binary>> = BinData,
+    {ParsedImageData, Rest} = image_data_all_sub_blocks(SubBlocks),
+    ImageDataDecoded = lzw_decode(LZWMinCodeSize, ParsedImageData),
+
+    OldImages = ParsedData#parsed_gif.images,
+    ParsedImageFull = ParsedImage#parsed_img{data=ImageDataDecoded},
+    ParsedDataIm = ParsedData#parsed_gif{images=[ParsedImageFull|OldImages]},
+
+    io:format("~p~n", [ParsedDataIm]),
+    parse_image_descriptor(Rest, ParsedDataIm).
 
 init_sdl(ParsedData) ->
     case init_video(ParsedData) of
