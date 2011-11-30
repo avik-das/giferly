@@ -20,7 +20,11 @@ $(BUILD) :
 	@make $(TARGETS)
 
 run:
-	$(ERL) -pa $(BUILD) -pa $(ESDLDIR)/ebin $(MAIN) -run $(MAIN) go
+	# once the module has been compiled, run the module's entry function, then
+	# run init:stop to end the process. Notice the -noshell to prevent a shell
+	# from starting.
+	$(ERL) -pa $(BUILD) -pa $(ESDLDIR)/ebin \
+		-noshell -run $(MAIN) go -run init stop
 
 clean:
 	@echo clean ...
