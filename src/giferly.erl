@@ -107,7 +107,7 @@ background_color_index(<<_:40, Index:8, _:8>>) ->
 % components respectively.
 
 color_table(_, 0, ParsedColors) ->
-    ParsedColors;
+    lists:reverse(ParsedColors);
 
 color_table(BinData, NumColorsLeft, ParsedColors) ->
     <<R:8, G:8, B:8, Rest/binary>> = BinData,
@@ -457,15 +457,16 @@ end_of_file(_        ) -> false.
 
 go() ->
     case file:read_file("gfx/rgb-stripes.gif") of
-        {ok, Data}      -> parse_data(Data);
+        {ok, Data}      ->
+            io:format("Raw Data: ~p~n", [Data]),
+            ParsedData = parse_data(Data),
+            init_sdl(ParsedData);
         {error, Reason} ->
             io:format("Unable to open file: ~s~n", [Reason]),
             error
     end.
 
 parse_data(<<Header:6/bytes, Rest/binary>>) ->
-    io:format("~p~n", [<<Header:6/bytes, Rest/binary>>]),
-
     HeaderValid = header_valid(Header),
     if
          HeaderValid ->
@@ -483,7 +484,6 @@ parse_logical_screen_descriptor(<<Lsd:7/bytes, Rest/binary>>) ->
             ParsedDataWH =
                 ParsedData#parsed_gif{w=W, h=H, color_depth=ColorDepth}
     end,
-    io:format("~p~n", [ParsedDataWH]),
 
     case global_color_table_flag(Lsd) of
         true  ->
@@ -508,7 +508,6 @@ parse_global_color_table(BinData, ParsedData,
 
     % TODO: preserve BGIndex
 
-    io:format("~p~n", [ParsedDataGC]),
     parse_extension_blocks(Rest, ParsedDataGC).
 
 parse_extension_blocks(BinData, ParsedData) ->
@@ -520,16 +519,14 @@ parse_extension_blocks(BinData, ParsedData) ->
 parse_image_descriptor(BinData, ParsedData) ->
     Eof = end_of_file(BinData),
     if Eof ->
-        io:format("Done!~n"),
-        ok;
+        io:format("Parsed image: ~p~n", [ParsedData]),
+        io:format("Finished parsing image...~n"),
+        ParsedData;
        true ->
-        io:format("lol~n"),
-
         <<ImDesc:10/bytes, Rest/binary>> = BinData,
         {{l, L}, {t, T}, {w, W}, {h, H}} = image_descriptor_dim(ImDesc),
         ParsedImage = #parsed_img{l=L, t=T, w=W, h=H},
 
-        io:format("~p~n", [ImDesc]),
         case local_color_table_flag(ImDesc) of
             true  ->
                 LCTableSize = local_color_table_size(ImDesc),
@@ -567,29 +564,94 @@ parse_image_data(BinData, ParsedData, ParsedImage) ->
     ParsedImageFull = ParsedImage#parsed_img{data=ImageDataDecoded},
     ParsedDataIm = ParsedData#parsed_gif{images=[ParsedImageFull|OldImages]},
 
-    io:format("~p~n", [ParsedDataIm]),
     parse_image_descriptor(Rest, ParsedDataIm).
 
+init_sdl(#parsed_gif{images=[]}) ->
+    io:format("No images to display; shutting down...~n"),
+    ok;
 init_sdl(ParsedData) ->
+
     case init_video(ParsedData) of
         error ->
             sdl:quit(),
             error;
         ok    ->
-            %draw_image(ParsedData),
+            draw_image(ParsedData, []),
+            io:format("Shutting down...~n"),
             sdl:quit(),
             ok
     end.
 
-init_video({{w, W}, {h, H}, _}) ->
+init_video(#parsed_gif{w=W, h=H}) ->
     sdl:init(?SDL_INIT_VIDEO bor ?SDL_INIT_ERLDRIVER),
 
     Bpp = 16,
-    Surface = sd_video:setVideoMode(W, H, Bpp, ?SDL_SWSURFACE),
+    Surface = sdl_video:setVideoMode(W, H, Bpp, ?SDL_SWSURFACE),
+    % TODO: set the title to the image filename?
+    sdl_video:wm_setCaption("giferly", []),
 
     case Surface of
         error ->
             io:format("Can't set video mode~n"),
             error;
         _     -> ok
+    end.
+
+draw_image(ParsedData, []) ->
+    #parsed_gif{images=Images} = ParsedData,
+    draw_image(ParsedData, Images);
+draw_image(ParsedData, [Image|ImagesRest]) ->
+    % TODO: check if local color table is present and use it if it is
+    ColorTable = ParsedData#parsed_gif.colors,
+    paint_pixels(Image, ColorTable),
+
+    case check_event() of
+        ok ->
+            timer:sleep(100),
+            draw_image(ParsedData, [Image|ImagesRest]);
+        next ->
+            timer:sleep(100),
+            io:format("Moving to next image...~n"),
+            draw_image(ParsedData, ImagesRest);
+        quit ->
+            ok
+    end.
+
+paint_pixels(#parsed_img{l=L, t=T, w=W, h=H, data=Data}, ColorTable) ->
+    Xs = lists:seq(L, L + W - 1),
+    Ys = lists:seq(T, T + H - 1),
+    Coords = lists:map
+        (fun(A) -> lists:map(fun(B) -> {A, B} end, Ys) end, Xs),
+    CoordData = lists:zip(lists:flatten(Coords), Data),
+
+    SurfaceRef = sdl_video:getVideoSurface(),
+    Surface = sdl_video:getSurface(SurfaceRef),
+
+    lists:foreach(fun(Pixel) -> sdl_put_pixel(Surface, Pixel, ColorTable) end,
+        CoordData),
+    sdl_video:updateRect(SurfaceRef, L, T, W, H),
+
+    ok.
+
+sdl_put_pixel(Surface, {{X, Y}, Index}, ColorTable) ->
+    DestRect = #sdl_rect{x=X, y=Y, w=1, h=1},
+    #color{r=R, g=G, b=B} = lists:nth(Index + 1, ColorTable),
+    SdlColor = sdl_video:mapRGB(Surface, R, G, B),
+
+    sdl_video:fillRect(Surface, DestRect, SdlColor).
+
+check_event() ->
+    case sdl_events:pollEvent() of
+        #quit{}                     -> quit;
+        #keyboard{sym=?SDLK_q}      -> quit;
+        #keyboard{sym=?SDLK_ESCAPE} -> quit;
+
+        no_event -> ok;
+
+        #keyboard{state=?SDL_RELEASED, sym=$n}          -> next;
+        #keyboard{state=?SDL_RELEASED, sym=?SDLK_SPACE} -> next;
+
+        Event ->
+            io:format("Got event ~p~n", [Event]),
+            ok
     end.
