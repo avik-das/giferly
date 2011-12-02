@@ -130,26 +130,89 @@ global_color_table(BinData, NumColors) ->
 
 % The graphics control extension may appear only once, if at all, before a
 % graphic rendering block, but we won't bother checking that.
-read_all_extension_blocks(BinData) ->
+read_all_extension_blocks(BinData, Extensions) ->
     case BinData of
         <<16#21, _/binary>> ->
-            NewBinData = extension_block(BinData),
-            read_all_extension_blocks(NewBinData);
-        _                      ->
-            BinData
+            case extension_block(BinData) of
+                {graphics_control, ParsedGCE, NewBinData} ->
+                    read_all_extension_blocks
+                        (NewBinData, [ParsedGCE|Extensions]);
+                 NewBinData                               ->
+                    read_all_extension_blocks(NewBinData, Extensions)
+            end;
+        _                   ->
+            {Extensions, BinData}
     end.
 
 % --- Graphics Control Extension ----------------------------------------------
 
+% The first byte in the graphics control extension is a packed byte, the first
+% three bits of which are reserved. Following this are three bits denoting the
+% disposal method, which specifies how the decoder should handle the canvas
+% after a image has been displayed, before displaying the next. This is used
+% for animating multiple frames one after another. The possible values are:
+
+% 0   - No disposal specified. This is used when there is no animation. The
+%       decoder should do nothing.
+-define(DISPOSAL_UNSPECIFIED , 0).
+
+% 1   - Do not dispose. Leave the canvas as it is, painting over it for the
+%       next frame. This allows for incremental changes between frames.
+-define(DISPOSAL_NONE        , 1).
+
+% 2   - Restore to background color. The area belonging to the current image
+%       should be completely painted with the background color, which is
+%       specified in the logical screen descriptor.
+-define(DISPOSAL_RESTORE_BG  , 2).
+
+% 3   - Restore to previous. The area belonging to the current image should be
+%       restored to whatever was present in that area before.
+-define(DISPOSAL_RESTORE_PREV, 3).
+
+% 4-7 - To be defined.
+
+disposal_method(<<_:3/bits, DisposalMethod:3, _:2/bits>>) ->
+    DisposalMethod.
+
+% The next bit in the packed byte is the user input flag. Determines whether
+% the application is expected to wait for some user input (as defined by the
+% application) before displaying the next image. It is unlikely that this will
+% be set, and this application will ignore it.
+
+% The final bit is the transparency flag. If set, then the transparency index,
+% given later in the graphics control extension, should be used to provide
+% transparency in the image.
+transparency_flag(<<_:7/bits, 1:1>>) ->
+    true ;
+transparency_flag(<<_:7/bits, 0:1>>) ->
+    false.
+
+% The next byte in the graphics control extension, when not "0", specifies the
+% amount of time to wait before displaying the next image. The value is given
+% in 1/100ths of a second and is counted starting immediately after the image
+% is rendered.
+
+% The next byte is the transparency index. This is relevant only if the
+% transparency index is set in the packed byte mentioned before. If so, any
+% pixels with this index is unmodified when rendering.
+
 % Technically, the block has a size field, and a block terminator, but in this
 % case, the block has a constant size, with a fixed structure.
 extension_block(<<16#21f904:24,
-    Packed:8, DelayTime:16/little, TransparentIndex:8,
+    Packed:8/bits, DelayTime:16/little, TransparentIndex:8,
     0:8, Rest/binary>>) ->
-    % TODO: parse packed byte
-    % TODO: preserve the extracted data
+    DisposalMethod = disposal_method(Packed),
+    ParsedTransparencyIndex = case transparency_flag(Packed) of
+        true  -> TransparentIndex;
+        false -> -1
+    end,
 
-    Rest;
+    ParsedGCE = {graphics_control_extension,
+                    {disposal    , DisposalMethod         },
+                    {delay       , DelayTime              },
+                    {transparency, ParsedTransparencyIndex}},
+
+    {graphics_control, ParsedGCE, Rest};
 
 % --- Comment Extension -------------------------------------------------------
 
@@ -449,14 +512,14 @@ end_of_file(_        ) -> false.
 
 % == PARSED RECORD STRUCTURE ==================================================
 
-% TODO: more data
--record(parsed_gif, {w, h, color_depth, colors=[], images=[]}).
+-record(parsed_gif, {w, h, color_depth, disposal, delay, transparency,
+    colors=[], images=[]}).
 -record(parsed_img, {l, t, w, h, colors=[], data=[]}).
 
 % == MAIN ROUTINES ============================================================
 
 go() ->
-    case file:read_file("gfx/rgb-stripes.gif") of
+    case file:read_file("gfx/rgb-stripes-transparent.gif") of
         {ok, Data}      ->
             io:format("Raw Data: ~p~n", [Data]),
             ParsedData = parse_data(Data),
@@ -465,6 +528,8 @@ go() ->
             io:format("Unable to open file: ~s~n", [Reason]),
             error
     end.
+
+% == MAIN PARSE ROUTINES ======================================================
 
 parse_data(<<Header:6/bytes, Rest/binary>>) ->
     HeaderValid = header_valid(Header),
@@ -511,10 +576,20 @@ parse_global_color_table(BinData, ParsedData,
     parse_extension_blocks(Rest, ParsedDataGC).
 
 parse_extension_blocks(BinData, ParsedData) ->
-    Rest = read_all_extension_blocks(BinData),
-    % TODO: actually retrieve some parsed data, when available, and use it
+    {Extensions, Rest} = read_all_extension_blocks(BinData, []),
+    NewParsedData =
+        case lists:keyfind(graphics_control_extension, 1, Extensions) of
+            {graphics_control_extension,
+                {disposal    , DisposalMethod   },
+                {delay       , DelayTime        },
+                {transparency, TransparencyIndex}} ->
+                ParsedData#parsed_gif{disposal=DisposalMethod,
+                    delay=DelayTime, transparency=TransparencyIndex};
+            false                                  ->
+                ParsedData
+        end,
 
-    parse_image_descriptor(Rest, ParsedData).
+    parse_image_descriptor(Rest, NewParsedData).
 
 parse_image_descriptor(BinData, ParsedData) ->
     Eof = end_of_file(BinData),
@@ -566,6 +641,8 @@ parse_image_data(BinData, ParsedData, ParsedImage) ->
 
     parse_image_descriptor(Rest, ParsedDataIm).
 
+% == MAIN SDL ROUTINES ========================================================
+
 init_sdl(#parsed_gif{images=[]}) ->
     io:format("No images to display; shutting down...~n"),
     ok;
@@ -576,6 +653,7 @@ init_sdl(ParsedData) ->
             sdl:quit(),
             error;
         ok    ->
+            draw_background(),
             draw_image(ParsedData, []),
             io:format("Shutting down...~n"),
             sdl:quit(),
@@ -597,13 +675,44 @@ init_video(#parsed_gif{w=W, h=H}) ->
         _     -> ok
     end.
 
+draw_background() ->
+    SurfaceRef = sdl_video:getVideoSurface(),
+    Surface = sdl_video:getSurface(SurfaceRef),
+
+    #sdl_surface{w=W, h=H} = Surface,
+    DestRect = #sdl_rect{x=0, y=0, w=W, h=H},
+
+    BGColor = sdl_video:mapRGB(Surface, 255, 255, 255),
+    sdl_video:fillRect(Surface, DestRect, BGColor),
+
+    BGColor2 = sdl_video:mapRGB(Surface, 192, 192, 192),
+    draw_bg_checkers(Surface, 0, 0, W, H, 4, BGColor2),
+
+    sdl_video:updateRect(SurfaceRef, 0, 0, W, H).
+
+draw_bg_checkers(Surface, X, Y, W, H, Size, Color) ->
+    Parity = (X div Size + Y div Size) rem 2,
+
+    if
+        Y > H        -> ok;
+        X > W        ->
+            draw_bg_checkers(Surface, 0, Y + Size, W, H, Size, Color);
+        Parity =:= 0 ->
+            draw_bg_checkers(Surface, X + Size, Y, W, H, Size, Color);
+        Parity =/= 0 ->
+            DestRect = #sdl_rect{x=X, y=Y, w=Size, h=Size},
+            sdl_video:fillRect(Surface, DestRect, Color),
+            draw_bg_checkers(Surface, X + Size, Y, W, H, Size, Color)
+    end.
+
+
 draw_image(ParsedData, []) ->
     #parsed_gif{images=Images} = ParsedData,
     draw_image(ParsedData, Images);
 draw_image(ParsedData, [Image|ImagesRest]) ->
     % TODO: check if local color table is present and use it if it is
     ColorTable = ParsedData#parsed_gif.colors,
-    paint_pixels(Image, ColorTable),
+    paint_pixels(ParsedData, Image, ColorTable),
 
     case check_event() of
         ok ->
@@ -617,12 +726,15 @@ draw_image(ParsedData, [Image|ImagesRest]) ->
             ok
     end.
 
-paint_pixels(#parsed_img{l=L, t=T, w=W, h=H, data=Data}, ColorTable) ->
+paint_pixels(#parsed_gif{transparency=TransparentIndex},
+    #parsed_img{l=L, t=T, w=W, h=H, data=Data}, ColorTable) ->
     Xs = lists:seq(L, L + W - 1),
     Ys = lists:seq(T, T + H - 1),
     Coords = lists:map
         (fun(A) -> lists:map(fun(B) -> {A, B} end, Ys) end, Xs),
-    CoordData = lists:zip(lists:flatten(Coords), Data),
+    RawCoordData = lists:zip(lists:flatten(Coords), Data),
+    CoordData = lists:filter
+        (fun({_, Index}) -> Index =/= TransparentIndex end, RawCoordData),
 
     SurfaceRef = sdl_video:getVideoSurface(),
     Surface = sdl_video:getSurface(SurfaceRef),
