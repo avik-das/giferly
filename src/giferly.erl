@@ -641,6 +641,16 @@ parse_image_data(BinData, ParsedData, ParsedImage) ->
 
 % == MAIN SDL ROUTINES ========================================================
 
+-define(ZOOM_DEFAULT, 1).
+
+-define(ZOOM_MIN,  1).
+-define(ZOOM_MAX, 16).
+
+-define(ZOOM_INCREASE, 1).
+-define(ZOOM_DECREASE, 2).
+
+-define(DISP_BPP, 16).
+
 init_sdl(#parsed_gif{images=[]}) ->
     io:format("No images to display; shutting down...~n"),
     ok;
@@ -651,8 +661,7 @@ init_sdl(ParsedData) ->
             sdl:quit(),
             error;
         ok    ->
-            draw_background(),
-            draw_image(ParsedData, []),
+            draw_image(ParsedData, [], ?ZOOM_DEFAULT),
             io:format("Shutting down...~n"),
             sdl:quit(),
             ok
@@ -661,8 +670,7 @@ init_sdl(ParsedData) ->
 init_video(#parsed_gif{w=W, h=H}) ->
     sdl:init(?SDL_INIT_VIDEO bor ?SDL_INIT_ERLDRIVER),
 
-    Bpp = 16,
-    Surface = sdl_video:setVideoMode(W, H, Bpp, ?SDL_SWSURFACE),
+    Surface = resize_canvas(W, H, ?ZOOM_DEFAULT),
     % TODO: set the title to the image filename?
     sdl_video:wm_setCaption("giferly", []),
 
@@ -671,6 +679,17 @@ init_video(#parsed_gif{w=W, h=H}) ->
             io:format("Can't set video mode~n"),
             error;
         _     -> ok
+    end.
+
+resize_canvas(W, H, Zoom) ->
+    Surface = sdl_video:setVideoMode
+        (W * Zoom, H * Zoom, ?DISP_BPP, ?SDL_SWSURFACE),
+
+    case Surface of
+        error -> error;
+        _     ->
+            draw_background(),
+            Surface
     end.
 
 draw_background() ->
@@ -704,28 +723,43 @@ draw_bg_checkers(Surface, X, Y, W, H, Size, Color) ->
     end.
 
 
-draw_image(ParsedData, []) ->
+draw_image(ParsedData, [], Zoom) ->
     #parsed_gif{images=Images} = ParsedData,
-    draw_image(ParsedData, Images);
-draw_image(ParsedData, [Image|ImagesRest]) ->
+    draw_image(ParsedData, Images, Zoom);
+draw_image(ParsedData, [Image|ImagesRest], Zoom) ->
     % TODO: check if local color table is present and use it if it is
     ColorTable = ParsedData#parsed_gif.colors,
-    paint_pixels(ParsedData, Image, ColorTable),
+    paint_pixels(ParsedData, Image, ColorTable, Zoom),
 
     case check_event() of
         ok ->
             timer:sleep(100),
-            draw_image(ParsedData, [Image|ImagesRest]);
+            draw_image(ParsedData, [Image|ImagesRest], Zoom);
+        {zoom, ZoomType} ->
+            timer:sleep(100),
+            NewZoom = change_zoom(Zoom, ZoomType),
+            #parsed_gif{w=W, h=H} = ParsedData,
+            resize_canvas(W, H, NewZoom),
+            draw_image(ParsedData, [Image|ImagesRest], NewZoom);
         next ->
             timer:sleep(100),
             io:format("Moving to next image...~n"),
-            draw_image(ParsedData, ImagesRest);
+            draw_image(ParsedData, ImagesRest, Zoom);
         quit ->
             ok
     end.
 
+change_zoom(OldZoom, ?ZOOM_INCREASE) ->
+    if OldZoom >= ?ZOOM_MAX -> OldZoom;
+       true                 -> OldZoom + 1
+    end;
+change_zoom(OldZoom, ?ZOOM_DECREASE) ->
+    if OldZoom =< ?ZOOM_MIN -> OldZoom;
+       true                 -> OldZoom - 1
+    end.
+
 paint_pixels(#parsed_gif{transparency=TransparentIndex},
-    #parsed_img{l=L, t=T, w=W, h=H, data=Data}, ColorTable) ->
+    #parsed_img{l=L, t=T, w=W, h=H, data=Data}, ColorTable, Zoom) ->
     Xs = lists:seq(L, L + W - 1),
     Ys = lists:seq(T, T + H - 1),
     Coords = lists:map
@@ -737,14 +771,14 @@ paint_pixels(#parsed_gif{transparency=TransparentIndex},
     SurfaceRef = sdl_video:getVideoSurface(),
     Surface = sdl_video:getSurface(SurfaceRef),
 
-    lists:foreach(fun(Pixel) -> sdl_put_pixel(Surface, Pixel, ColorTable) end,
-        CoordData),
-    sdl_video:updateRect(SurfaceRef, L, T, W, H),
+    lists:foreach(fun(Pixel) ->
+        sdl_put_pixel(Surface, Pixel, ColorTable, Zoom) end, CoordData),
+    sdl_video:updateRect(SurfaceRef, L * Zoom, T * Zoom, W * Zoom, H * Zoom),
 
     ok.
 
-sdl_put_pixel(Surface, {{X, Y}, Index}, ColorTable) ->
-    DestRect = #sdl_rect{x=X, y=Y, w=1, h=1},
+sdl_put_pixel(Surface, {{X, Y}, Index}, ColorTable, Zoom) ->
+    DestRect = #sdl_rect{x=X * Zoom, y=Y * Zoom, w=Zoom, h=Zoom},
     #color{r=R, g=G, b=B} = lists:nth(Index + 1, ColorTable),
     SdlColor = sdl_video:mapRGB(Surface, R, G, B),
 
@@ -755,6 +789,11 @@ check_event() ->
         #quit{}                     -> quit;
         #keyboard{sym=?SDLK_q}      -> quit;
         #keyboard{sym=?SDLK_ESCAPE} -> quit;
+
+        #keyboard{state=?SDL_RELEASED, sym=?SDLK_EQUALS} ->
+            {zoom, ?ZOOM_INCREASE};
+        #keyboard{state=?SDL_RELEASED, sym=?SDLK_MINUS} ->
+            {zoom, ?ZOOM_DECREASE};
 
         no_event -> ok;
 
