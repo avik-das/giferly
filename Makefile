@@ -13,6 +13,8 @@ ERLINC		:= $(ESDLDIR)/include
 
 ERL_COMPILE_FLAGS	:= -pa $(ESDLDIR)/ebin
 
+IN	:= gfx/rgb-stripes-transparent.gif
+
 .PHONY: $(BUILD) run clean
 
 $(BUILD) :
@@ -24,7 +26,7 @@ run:
 	# run init:stop to end the process. Notice the -noshell to prevent a shell
 	# from starting.
 	$(ERL) -pa $(BUILD) -pa $(ESDLDIR)/ebin \
-		-noshell -run $(MAIN) go -run init stop
+		-noshell -run $(MAIN) go "$(IN)" -run init stop
 
 clean:
 	@echo clean ...

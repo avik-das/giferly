@@ -30,7 +30,7 @@
 
 -module(giferly).
 -author('Avik Das <avikstrange@gmail.com>').
--export([go/0]).
+-export([go/1]).
 
 -include("sdl.hrl").
 -include("sdl_events.hrl").
@@ -516,8 +516,8 @@ end_of_file(_        ) -> false.
 
 % == MAIN ROUTINES ============================================================
 
-go() ->
-    case file:read_file("gfx/rgb-stripes-transparent.gif") of
+go([Filename|RestArgs]) ->
+    case file:read_file(Filename) of
         {ok, Data}      ->
             io:format("Raw Data: ~p~n", [Data]),
             ParsedData = parse_data(Data),
