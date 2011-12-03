@@ -28,8 +28,6 @@
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-% TODO: License
-
 -module(giferly).
 -author('Avik Das <avikstrange@gmail.com>').
 -export([go/0]).
