@@ -58,11 +58,11 @@ Pressing '`q`' or `ESC` will quit the application.
 Dependencies
 ------------
 
-<dt>
-  <dt>[Erlang](http://www.erlang.org/download.html)</dt>
+<dl>
+  <dt><a href="http://www.erlang.org/download.html">Erlang</a></dt>
   <dd>In particular, the compiler and virtual machine are needed to build and run this application. As I am using Ubuntu 11.04 in developing this application, I have developed against Erlang R13B03, and as such have avoided any features available only in later releases.</dd>
 
-  <dt>[Esdl (Erlang SDL bindings)](http://esdl.sourceforge.net/)</dt>
+  <dt><a href="http://esdl.sourceforge.net/">Esdl (Erlang SDL bindings)</a></dt>
   <dd>Used to render the decoded GIF onto the screen. The Makefile assumes the library files live inside `/usr/lib/esdl`, which is where Ubuntu's `erlang-esdl` package (and presumably Debian's) installs the library. Change the Makefile if you install it elsewhere.</dd>
 </dl>
 
@@ -97,12 +97,12 @@ References
 ----------
 
 <dl>
-  <dt>[What's In A GIF](http://matthewflickinger.com/lab/whatsinagif/bits_and_bytes.asp)</dt>
+  <dt><a href="http://matthewflickinger.com/lab/whatsinagif/bits_and_bytes.asp">What's In A GIF</a></dt>
   <dd>the article that piqued my interest. Provides a very comprehensive, but approachable, guide to the GIF 89a format.</dd>
 
-  <dt>[Graphics Interchange Format Version 89a](http://www.w3.org/Graphics/GIF/spec-gif89a.txt)</dt>
+  <dt><a href="http://www.w3.org/Graphics/GIF/spec-gif89a.txt">Graphics Interchange Format Version 89a</a></dt>
   <dd>The official specification, dated 31 July 1990.</dd>
 
-  <dt>[Learn You Some Erlang For Great Good!](http://learnyousomeerlang.com/)</dt>
+  <dt><a href="http://learnyousomeerlang.com/">Learn You Some Erlang For Great Good!</a></dt>
   <dd>The book I'm using to learn Erlang.</dd>
 </dl>
