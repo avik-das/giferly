@@ -727,8 +727,10 @@ draw_image(ParsedData, [], Zoom) ->
     #parsed_gif{images=Images} = ParsedData,
     draw_image(ParsedData, Images, Zoom);
 draw_image(ParsedData, [Image|ImagesRest], Zoom) ->
-    % TODO: check if local color table is present and use it if it is
-    ColorTable = ParsedData#parsed_gif.colors,
+    ColorTable = case Image#parsed_img.colors of
+        []         -> ParsedData#parsed_gif.colors;
+        LocalTable -> LocalTable
+    end,
     paint_pixels(ParsedData, Image, ColorTable, Zoom),
 
     case check_event() of
