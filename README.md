@@ -9,7 +9,7 @@ Overview
 giferly is a standalone graphical program that decodes a GIF file in pure
 Erlang, then displays the image using the Simple DirectMedia Layer (SDL).
 
-![](http://github.com/avik-das/giferly/raw/master/screenshot.png)
+![](https://raw.githubusercontent.com/avik-das/giferly/master/screenshot.png)
 
 Rationale
 ---------
