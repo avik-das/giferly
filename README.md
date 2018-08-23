@@ -31,7 +31,7 @@ Quick Start
 
 ```sh
 # Install the necessary dependencies (example given for Ubuntu)
-sudo apt-get install erlang erlang-esdl-dev
+sudo apt install erlang erlang-esdl-dev
 
 # build the application
 make
@@ -62,10 +62,10 @@ Dependencies
 
 <dl>
   <dt><a href="http://www.erlang.org/download.html">Erlang</a></dt>
-  <dd>In particular, the compiler and virtual machine are needed to build and run this application. As I am using Ubuntu 11.04 in developing this application, I have developed against Erlang R13B03, and as such have avoided any features available only in later releases.</dd>
+  <dd>In particular, the compiler and virtual machine are needed to build and run this application. As I am using Ubuntu 11.04 in developing this application, I have developed against Erlang R13B03, and as such have avoided any features available only in later releases. I have since tested on Ubuntu 18.04, Erlang/OTP 20.</dd>
 
   <dt><a href="http://esdl.sourceforge.net/">Esdl (Erlang SDL bindings)</a></dt>
-  <dd>Used to render the decoded GIF onto the screen. The Makefile assumes the library files live inside `/usr/lib/esdl`, which is where Ubuntu's `erlang-esdl` package (and presumably Debian's) installs the library. Change the Makefile if you install it elsewhere.</dd>
+  <dd>Used to render the decoded GIF onto the screen.</dd>
 </dl>
 
 Current Status

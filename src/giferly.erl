@@ -32,10 +32,10 @@
 -author('Avik Das <avikstrange@gmail.com>').
 -export([go/1]).
 
--include("sdl.hrl").
--include("sdl_events.hrl").
--include("sdl_video.hrl").
--include("sdl_keyboard.hrl").
+-include_lib("esdl/include/sdl.hrl").
+-include_lib("esdl/include/sdl_events.hrl").
+-include_lib("esdl/include/sdl_video.hrl").
+-include_lib("esdl/include/sdl_keyboard.hrl").
 
 % == GIF FILE FORMAT ==========================================================
 
@@ -535,7 +535,7 @@ parse_data(<<Header:6/bytes, Rest/binary>>) ->
          HeaderValid ->
             parse_logical_screen_descriptor(Rest);
         true                 ->
-            io:format("Invalid header: ~P~n", [Header]),
+            io:format("Invalid header: ~p~n", [Header]),
             error
     end.
 
@@ -641,10 +641,12 @@ parse_image_data(BinData, ParsedData, ParsedImage) ->
 
 % == MAIN SDL ROUTINES ========================================================
 
--define(ZOOM_DEFAULT, 1).
+% Note from Avik: I use a Hi-DPI display, and a larger zoom looks better. For
+% anyone not using a Hi-DPI display, a zoom level of 2 still won't look bad.
+-define(ZOOM_DEFAULT, 2).
 
--define(ZOOM_MIN,  1).
--define(ZOOM_MAX, 16).
+-define(ZOOM_MIN,  2).
+-define(ZOOM_MAX, 32).
 
 -define(ZOOM_INCREASE, 1).
 -define(ZOOM_DECREASE, 2).
