@@ -42,6 +42,9 @@ make run
 # run the application with a different input file
 # note that there are many bugs, so many files won't work
 make run IN=gfx/rgb-stripes.gif
+
+# run the tests
+make test
 ```
 
 User Interaction

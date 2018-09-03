@@ -11,7 +11,7 @@ ERLC := erlc
 
 IN := gfx/rgb-stripes-transparent.gif
 
-.PHONY: all run clean
+.PHONY: all run test clean
 
 all: $(TARGETS)
 
@@ -22,12 +22,16 @@ run:
 	# Notice the `-noshell` to prevent a sub-shell from starting.
 	$(ERL) -pa $(BUILD) -noshell -run $(MAIN) go "$(IN)" -run init stop
 
+test: TEST=1
+test: $(TARGETS)
+	$(ERL) -noshell -run eunit test $(BUILD) -run init stop
+
 $(BUILD):
 	@echo creating build directory...
 	@[ -d $@ ] || mkdir -p $@
 
 %.beam: $(SOURCES)/%.erl $(BUILD)
-	$(ERLC) -W -bbeam -o$(BUILD) $<
+	$(ERLC) $(if $(TEST),-DTEST) -W -bbeam -o$(BUILD) $<
 
 clean:
 	@echo cleaning...
