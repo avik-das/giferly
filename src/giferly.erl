@@ -276,14 +276,25 @@ local_color_table(BinData, NumColors) ->
 % are explained in the LZW compression section following those functions.
 
 % The first byte of the image data is the LZW minimum code size.
-lzw_minimum_code_size(<<Size:8, _/binary>>) ->
-    Size.
+lzw_minimum_code_size(<<Size:8, Rest/binary>>) ->
+    {Size, Rest}.
 
 % The rest of the block is grouped into data sub-blocks. Each sub-block starts
 % with a single byte stating the number of bytes of data in the following
-% sub-block, followed by that many bytes of data.
+% sub-block, followed by that many bytes of data. Once a sub-block with size
+% zero is reached, no more sub-blocks follow.
+
+%% @doc Read all consecutive sub-blocks, starting at the beginning of the given
+%% bit string.
+%%
+%% @returns  The binary data in the consecutive sub-blocks, divided into
+%% individual bit strings, one per byte.
 image_data_all_sub_blocks(BinData) ->
-    image_data_next_sub_block(BinData, <<>>).
+    {AllSubBlockData, Rest} = image_data_next_sub_block(BinData, <<>>),
+
+    AllSubBlockBytes =
+        lists:map(fun(Byte) -> <<Byte>> end, binary_to_list(AllSubBlockData)),
+    {AllSubBlockBytes, Rest}.
 
 image_data_next_sub_block(<<   0:8, Rest/binary>>, SubBlocks) ->
     {SubBlocks, Rest};
@@ -314,6 +325,9 @@ image_data_next_sub_block(<<Size:8, Rest/binary>>, SubBlocks) ->
 % the code table. Underneath, we will use an orddict, which is an arbitrary
 % choice due to the lack of benchmarking (since performance is not a concern
 % for this decoder).
+
+-define(MAXIMUM_CODE_SIZE, 12).
+
 lzw_code_table_new(NumColors) ->
     Table = lzw_code_table_initialize(0, NumColors, orddict:new()),
 
@@ -346,75 +360,33 @@ lzw_code_table_lookup(Table, Code) ->
 lzw_code_table_full(Table, CSize) ->
     orddict:size(Table) =:= round(math:pow(2, CSize)).
 
+%% @doc Determines what the next code size should be, given the current table
+%% and code size. The code size generally increases when the table is filled up
+%% with the maximum number of entries addressable by the current code size.
+lzw_code_table_next_code_size(Table, CSize) ->
+    % One caveat is if the code table is filled up for the current code size,
+    % and the code size can't increase, then the next code in the code stream
+    % will be a CLEAR code. The code size does not increase in this case.
+    ShouldIncreaseCCSize =
+        (CSize < ?MAXIMUM_CODE_SIZE) and lzw_code_table_full(Table, CSize),
+
+    case ShouldIncreaseCCSize of
+        true -> CSize + 1;
+        _    -> CSize
+    end.
+
 % ---- Data Stream Representation ---------------------------------------------
 
 % The LZW compression algorithm converts a stream of indices into a stream of
 % codes, with each code corresponding to some pattern of consecutive indices.
+%
 % The codes themselves are not stored as a single byte per code, as that would
 % limit the number of codes to 256, as well as taking up unnecessary space for
 % codes when there are fewer unique codes in the table at that point during the
 % execution of the compression algorithm. Thus, the number of bits used to
 % store a code varies over the execution of the algorithm.
-
-% Because a single code may be smaller than one byte and may span more than one
-% byte (say taking a few bits from one byte and the remaining bits from the
-% following byte). For example, given the bytes:
 %
-%   01100100 00101010
-%
-% and a code size of 5 bytes, the first code would be the least significant
-% bits of the first byte, i.e. 00100 = 4. This leaves the pattern:
-%
-%    011     00101010
-%
-% so the next code is 10 011, where "011" comes from the first byte and "10"
-% comes from the second. This introduces a number of issues:
-%
-%  * We can't just match a bitstring, because the actual values to be extracted
-%    need not be at the very beginning of the bitstring.
-%  * We can't reverse the entire bitstring, because individual bytes need to
-%    preserved. We also can't just reverse the bitstring byte by byte, because
-%    then the value to be extracted ends up at the end of the bitstring.
-%  * We need a way to record how many bits have already been extracted from the
-%    first byte, so we would have to pass that information around.
-%
-% Instead of dealing with these problems via a bitstring, we can convert the
-% entire bitstring into a list of 8-character strings consisting of "1"s and
-% "0"s, and we can perform string manipulation on this list. Obviously, this is
-% memory and time-intensive, but it's a solution that can be reasoned about. In
-% the future, it may be wise to develop a more abstract data structure in which
-% we can store the state, but for learning the language, a simpler solution
-% will more than suffice.
-
-lzw_binary_to_string_list(<<>>, List) ->
-    lists:reverse(List);
-lzw_binary_to_string_list(<<Byte:8, Rest/binary>>, List) ->
-    NList = [string:right(erlang:integer_to_list(Byte, 2), 8, $0)|List],
-    lzw_binary_to_string_list(Rest, NList).
-
-lzw_next_code([Byte|CDataRest], CodeSoFar, CSizeLeft) ->
-    ByteSize = length(Byte),
-
-    if
-        ByteSize >= CSizeLeft ->
-            NCodeSoFar = string:substr
-                (Byte, ByteSize - CSizeLeft + 1, CSizeLeft) ++ CodeSoFar,
-            NCSizeLeft = 0,
-
-            NByte = string:substr(Byte, 1, ByteSize - CSizeLeft),
-            case NByte of
-                [] -> NCData = CDataRest;
-                _  -> NCData = [NByte|CDataRest]
-            end;
-        true ->
-            NCData = CDataRest,
-            NCodeSoFar = CodeSoFar ++ Byte,
-            NCSizeLeft = CSizeLeft - ByteSize
-    end,
-
-    if NCSizeLeft =:= 0 -> {NCData, erlang:list_to_integer(NCodeSoFar, 2)};
-       true             -> lzw_next_code(NCData, NCodeSoFar, NCSizeLeft)
-    end.
+% See the `code_reader` module for information about the exact representation.
 
 % ---- Decompression Algorithm ------------------------------------------------
 
@@ -423,12 +395,14 @@ lzw_next_code([Byte|CDataRest], CodeSoFar, CSizeLeft) ->
 %  * Originally, the code size is the LZW Minimum Code Size plus one, since
 %    the Minimum Code Size is only sufficient for a table consisting only of
 %    the colors, and not the two special codes, CLEAR and EOI.
+%
 %  * Whenever the CLEAR code is encountered, the code table is rebuilt, and
 %    the current code size goes back to the original code size. The next code
 %    is immediately retrieved, and its value in the table is sent to the output
 %    stream. This is because the maximum code size is 12 bits. An encoder may
 %    choose to say with this code size when it is reached, not adding any more
 %    patterns to the code table.
+%
 %  * After the first code following the CLEAR code is decoded, the following
 %    loop is executed:
 %
@@ -436,70 +410,149 @@ lzw_next_code([Byte|CDataRest], CodeSoFar, CSizeLeft) ->
 %       corresponding pattern in the code table, if the code is in the table.
 %       Similarly, CODE-1 is the code that has just been decoded, and {CODE-1}
 %       its corresponding pattern.
+%
 %    2. If CODE is in the table:
+%
 %       a. Output {CODE} to the output stream.
+%
 %       b. Let K be the first index in {CODE}.
+%
 %       c. Add {CODE-1} ++ [K] to the code table.
+%
 %    3. IF CODE is not in the table:
+%
 %       a. Let K be the first index in {CODE-1}.
+%
 %       b. Output {CODE-1} ++ [K] to the output stream.
+%
 %       c. Add {CODE-1} ++ [K] to the code table.
+%
 %    4. Restart loop.
 %
 %  * When the code table contains the maximum number of codes addressable by
 %    the current code size (i.e. after the code with index 2^{CodeSize}-1 is
 %    added), the code size is increased by 1.
+%
+%    The exception is when the current code size is the maximum allowable code
+%    size, in which case the code size remains the same, and the next code is
+%    the clear code.
+%
 %  * When the EOI code is encountered, decompression is complete, and the loop
 %    is terminated.
 
-lzw_decode_single(CData, DData, PrevCode, CSize, Table, NumColors, MinCSize) ->
-    {NCData, CCode} = lzw_next_code(CData, "", CSize),
+%% @doc The dynamic state of the decompression algorithm. Represents data
+%% internal to the algorithm that changes from iteration to iteration. Does not
+%% capture the actual data being decompressed.
+-record(decompression_state, {
+          previous_index_sequence,
+          code_size,
+          table
+        }).
 
-    case lzw_code_table_lookup(Table, CCode) of
+%% @doc The constant parameters driving the decompression algorithm. Does not
+%% change over the execution of the algorithm.
+-record(decompression_context, {num_colors, minimum_code_size}).
+
+%% @doc Runs the decompression algorithm, one step at a time. Recursively calls
+%% itself to continue the algorithm.
+%%
+%% @returns  A list of lists, with each inner list containing an index
+%% sequence.
+%%
+%% The outer list is in reverse order, but the individual sequences are each in
+%% the correct order. It's more efficient to build up such a list. To post-
+%% process the output, reverse the outer list, then flatten it:
+%%
+%%     lists:flatten(lists:reverse(Decoded))
+lzw_decode_single(Compressed, Decoded, State, Context) ->
+    #decompression_state{
+       previous_index_sequence=PrevIndexSequence,
+       code_size=CodeSize,
+       table=Table
+    } = State,
+
+    {Code, RestCompressed} = code_reader:read_code(Compressed, CodeSize),
+
+    case lzw_code_table_lookup(Table, Code) of
         {ok, clear} ->
-            NTable = lzw_code_table_new(NumColors),
-            {NCData2, NPrevCode} = lzw_next_code(NCData, "", MinCSize),
-            {ok, Pattern} = lzw_code_table_lookup(Table, NPrevCode),
-            NDData = DData ++ Pattern,
+            io:format("Re-building code table~n"),
 
-            lzw_decode_single(NCData2,
-                NDData, NPrevCode, MinCSize, NTable, NumColors, MinCSize);
-        {ok, eoi  } ->
-            DData;
-        _           ->
-            {ok, PrevPattern} = lzw_code_table_lookup(Table, PrevCode),
-            case lzw_code_table_lookup(Table, CCode) of
-                {ok, Pattern} ->
-                    NDData = DData ++ Pattern,
-                    K = hd(Pattern),
+            #decompression_context{
+               num_colors=NumColors,
+               minimum_code_size=MinCodeSize
+            } = Context,
 
-                    NPattern = PrevPattern ++ [K],
-                    NTable = lzw_code_table_add(Table, NPattern);
-                error       ->
-                    K = hd(PrevPattern),
-                    NPattern = PrevPattern ++ [K],
-                    NDData = DData ++ NPattern,
-                    NTable = lzw_code_table_add(Table, NPattern)
-            end,
+            NewState = #decompression_state{
+                previous_index_sequence=clear,
+                code_size=MinCodeSize,
+                table=lzw_code_table_new(NumColors)
+            },
 
-            NCSize = case lzw_code_table_full(NTable, CSize) of
-                true  -> CSize + 1;
-                false -> CSize
-             end,
+            lzw_decode_single(RestCompressed, Decoded, NewState, Context);
 
-            case NCData of
-                [] -> DData;
-                _  -> lzw_decode_single(NCData,
-                    NDData, CCode, NCSize, NTable, NumColors, MinCSize)
-            end
+        {ok, eoi} -> Decoded;
+
+        {ok, IndexSequence} ->
+            NewDecoded = [IndexSequence|Decoded],
+
+            NewTable =
+                if
+                    PrevIndexSequence == undefined -> Table;
+                    PrevIndexSequence == clear -> Table;
+                    true ->
+                        FirstIndex = hd(IndexSequence),
+                        NextIndexSequence = PrevIndexSequence ++ [FirstIndex],
+                        lzw_code_table_add(Table, NextIndexSequence)
+                end,
+
+            NewCodeSize = lzw_code_table_next_code_size(NewTable, CodeSize),
+
+            NewState = #decompression_state{
+                previous_index_sequence=IndexSequence,
+                code_size=NewCodeSize,
+                table=NewTable
+            },
+
+            lzw_decode_single(RestCompressed, NewDecoded, NewState, Context);
+
+        error ->
+            FirstIndexInPreviousSequence = hd(PrevIndexSequence),
+            IndexSequence =
+                PrevIndexSequence ++ [FirstIndexInPreviousSequence],
+
+            NewDecoded = [IndexSequence|Decoded],
+
+            NewTable = lzw_code_table_add(Table, IndexSequence),
+            NewCodeSize = lzw_code_table_next_code_size(NewTable, CodeSize),
+
+            NewState = #decompression_state{
+                previous_index_sequence=IndexSequence,
+                code_size=NewCodeSize,
+                table=NewTable
+            },
+
+            lzw_decode_single(RestCompressed, NewDecoded, NewState, Context)
     end.
 
 lzw_decode(ImageData, LZWMinCodeSize, NumColors) ->
-    CData = lzw_binary_to_string_list(ImageData, []),
     Table = lzw_code_table_new(NumColors),
-    CSize = LZWMinCodeSize + 1,
+    CodeSize = LZWMinCodeSize + 1,
 
-    lzw_decode_single(CData, [], undefined, CSize, Table, NumColors, CSize).
+    DecodedSequences = lzw_decode_single(
+      ImageData,
+      [],
+      #decompression_state{
+          previous_index_sequence=undefined,
+          code_size=CodeSize,
+          table=Table
+      },
+      #decompression_context{
+          num_colors=NumColors,
+          minimum_code_size=CodeSize
+      }
+    ),
+
+    lists:flatten(lists:reverse(DecodedSequences)).
 
 % == TRAILER ==================================================================
 
@@ -627,7 +680,7 @@ parse_local_color_table(BinData, ParsedData, ParsedImage,
     parse_image_data(Rest, ParsedData, ParsedImageLC).
 
 parse_image_data(BinData, ParsedData, ParsedImage) ->
-    <<LZWMinCodeSize:8, SubBlocks/binary>> = BinData,
+    {LZWMinCodeSize, SubBlocks} = lzw_minimum_code_size(BinData),
     NumColors = length(ParsedData#parsed_gif.colors),
 
     {ParsedImageData, Rest} = image_data_all_sub_blocks(SubBlocks),
