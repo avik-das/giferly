@@ -824,8 +824,13 @@ paint_pixels(#parsed_gif{transparency=TransparentIndex},
     #parsed_img{l=L, t=T, w=W, h=H, data=Data}, ColorTable, Zoom) ->
     Xs = lists:seq(L, L + W - 1),
     Ys = lists:seq(T, T + H - 1),
+
+    % The decoded pixels are in row-major order. That means all the pixels for
+    % a given row (i.e. a constant Y-coordinate) are consecutive. Thus, when
+    % constructing the flattened list of coordinates, it's important to iterate
+    % over the Y-values first, then the X-values.
     Coords = lists:map
-        (fun(A) -> lists:map(fun(B) -> {A, B} end, Ys) end, Xs),
+        (fun(Y) -> lists:map(fun(X) -> {X, Y} end, Xs) end, Ys),
     RawCoordData = lists:zip(lists:flatten(Coords), Data),
     CoordData = lists:filter
         (fun({_, Index}) -> Index =/= TransparentIndex end, RawCoordData),

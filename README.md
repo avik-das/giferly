@@ -81,9 +81,9 @@ bug in the future, but please feel free to fork this project and update it.
 
 Some of the problems include:
 
-* Inability to decode GIF files. The bug might be in the LZW decompression
-  routines, but given the amount of data that needs to be processed, trying to
-  step through the execution of these routines is quite tedious.
+* Incomplete ability to decode GIF files. I've tested with multiple input
+  images, but real-world images often contain data, such as additional
+  extension blocks, that reveal bugs in the decoder.
 
 * Untested features: local color table support, whether an animated gif can
   even be parsed.
