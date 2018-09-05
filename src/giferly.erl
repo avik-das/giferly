@@ -728,30 +728,35 @@ draw_bg_checkers(Surface, X, Y, W, H, Size, Color) ->
 draw_image(ParsedData, [], Zoom) ->
     #parsed_gif{images=Images} = ParsedData,
     draw_image(ParsedData, Images, Zoom);
-draw_image(ParsedData, [Image|ImagesRest], Zoom) ->
+draw_image(ParsedData, Images, Zoom) ->
+    [Image|ImagesRest] = Images,
+
     ColorTable = case Image#parsed_img.colors of
         []         -> ParsedData#parsed_gif.colors;
         LocalTable -> LocalTable
     end,
     paint_pixels(ParsedData, Image, ColorTable, Zoom),
 
+    handle_next_event(ParsedData, [Image|ImagesRest], Zoom).
+
+handle_next_event(ParsedData, Images, Zoom) ->
     case check_event() of
         ok ->
-            timer:sleep(100),
-            draw_image(ParsedData, [Image|ImagesRest], Zoom);
+            handle_next_event(ParsedData, Images, Zoom);
         {zoom, ZoomType} ->
-            timer:sleep(100),
             NewZoom = change_zoom(Zoom, ZoomType),
             #parsed_gif{w=W, h=H} = ParsedData,
             resize_canvas(W, H, NewZoom),
-            draw_image(ParsedData, [Image|ImagesRest], NewZoom);
+            draw_image(ParsedData, Images, NewZoom);
         next ->
-            timer:sleep(100),
             io:format("Moving to next image...~n"),
+
+            [_|ImagesRest] = Images,
             draw_image(ParsedData, ImagesRest, Zoom);
         quit ->
             ok
     end.
+
 
 change_zoom(OldZoom, ?ZOOM_INCREASE) ->
     if OldZoom >= ?ZOOM_MAX -> OldZoom;
