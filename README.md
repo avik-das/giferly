@@ -55,9 +55,10 @@ Pressing '`=`' (that is, '`+`' without pressing the Shift key) zooms into the
 image, while pressing '`-`' zooms out. You cannot zoom out past 100%, and a
 maximum zoom level is also set.
 
-Pressing '`n`' or `SPACE` is currently set to move to the next frame of the
-animation if relevant, but given the fact that I am unable to load many images,
-this feature is untested.
+Pressing '`n`' or `SPACE` will move to the next frame of the animation if
+relevant. Not all animation-related functionality is supported yet, so the
+animation may have visual bugs, such as not clearing the image before moving to
+the next frame.
 
 Pressing '`q`' or `ESC` will quit the application.
 

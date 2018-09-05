@@ -142,6 +142,25 @@ read_all_extension_blocks(BinData, Extensions) ->
             {Extensions, BinData}
     end.
 
+% --- Sub-blocks --------------------------------------------------------------
+
+% Both extension blocks and the image data are grouped into data sub-blocks.
+%
+% Each sub-block starts with a single byte stating the number of bytes of data
+% in the following sub-block, followed by that many bytes of data. Once a
+% sub-block with size zero is reached, no more sub-blocks follow.
+
+%% @doc Reads all the consecutive sub-blocks starting at the beginning of the
+%% given bit string.
+%%
+%% @returns  All the binary data in the sub-blocks, as a single bit string.
+next_sub_block(<<   0:8, Rest/binary>>, SubBlocks) ->
+    {SubBlocks, Rest};
+next_sub_block(<<Size:8, Rest/binary>>, SubBlocks) ->
+    <<Block:Size/bytes, RemainingSubBlocks/binary>> = Rest,
+    SubBlocksNew = <<SubBlocks/binary, Block/binary>>,
+    next_sub_block(RemainingSubBlocks, SubBlocksNew).
+
 % --- Graphics Control Extension ----------------------------------------------
 
 % The first byte in the graphics control extension is a packed byte, the first
@@ -215,10 +234,19 @@ extension_block(<<16#21f904:24,
 % --- Comment Extension -------------------------------------------------------
 
 extension_block(<<16#21fe:16, BinData/binary>>) ->
-    <<Size:8, CommentRest/binary>> = BinData,
-    <<Comment:Size/bytes, 0, Rest/binary>> = CommentRest,
+    {AllSubBlockData, Rest} = next_sub_block(BinData, <<>>),
+
+    Comment = binary_to_list(AllSubBlockData),
     io:format("Comment: ~s~n", [Comment]),
 
+    Rest;
+
+% --- Other Extension Blocks --------------------------------------------------
+
+extension_block(<<16#21:8, Type:8, BinData/binary>>) ->
+    io:format("Found extension with unknown type: ~b. Ignoring~n", [Type]),
+
+    {AllSubBlockData, Rest} = next_sub_block(BinData, <<>>),
     Rest.
 
 % ~~ IMAGE DESCRIPTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -279,29 +307,17 @@ local_color_table(BinData, NumColors) ->
 lzw_minimum_code_size(<<Size:8, Rest/binary>>) ->
     {Size, Rest}.
 
-% The rest of the block is grouped into data sub-blocks. Each sub-block starts
-% with a single byte stating the number of bytes of data in the following
-% sub-block, followed by that many bytes of data. Once a sub-block with size
-% zero is reached, no more sub-blocks follow.
-
 %% @doc Read all consecutive sub-blocks, starting at the beginning of the given
 %% bit string.
 %%
 %% @returns  The binary data in the consecutive sub-blocks, divided into
 %% individual bit strings, one per byte.
 image_data_all_sub_blocks(BinData) ->
-    {AllSubBlockData, Rest} = image_data_next_sub_block(BinData, <<>>),
+    {AllSubBlockData, Rest} = next_sub_block(BinData, <<>>),
 
     AllSubBlockBytes =
         lists:map(fun(Byte) -> <<Byte>> end, binary_to_list(AllSubBlockData)),
     {AllSubBlockBytes, Rest}.
-
-image_data_next_sub_block(<<   0:8, Rest/binary>>, SubBlocks) ->
-    {SubBlocks, Rest};
-image_data_next_sub_block(<<Size:8, Rest/binary>>, SubBlocks) ->
-    <<Block:Size/bytes, RemainingSubBlocks/binary>> = Rest,
-    SubBlocksNew = <<SubBlocks/binary, Block/binary>>,
-    image_data_next_sub_block(RemainingSubBlocks, SubBlocksNew).
 
 % --- LZW Decompression -------------------------------------------------------
 
