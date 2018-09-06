@@ -594,7 +594,7 @@ parse_logical_screen_descriptor(<<Lsd:7/bytes, Rest/binary>>) ->
                 {{gc_table_size, GCTableSize},
                  {bg_index,      BGIndex    }});
         false ->
-            parse_main_blocks(Rest, ParsedDataWH)
+            parse_main_blocks(undefined, Rest, ParsedDataWH)
     end.
 
 parse_global_color_table(BinData, ParsedData,
@@ -608,10 +608,13 @@ parse_global_color_table(BinData, ParsedData,
 
     % TODO: preserve BGIndex
 
-    parse_main_blocks(Rest, ParsedDataGC).
+    parse_main_blocks(undefined, Rest, ParsedDataGC).
 
 %% @doc When the trailer (`0x3B`) is reached, there is no more data to parse.
-parse_main_blocks(<<16#3b>>, ParsedData) ->
+%%
+%% By the time the trailer is reached, there should no longer be an unattached
+%% graphics control block.
+parse_main_blocks(undefined, <<16#3b>>, ParsedData) ->
     io:format("Finished parsing image...~n"),
 
     % One caveat is that the images list is built up in reverse order, due to
@@ -626,10 +629,14 @@ parse_main_blocks(<<16#3b>>, ParsedData) ->
 %% However, the block is guaranteed to contain one, fixed-length block, so the
 %% entire block can be parsed in a single pattern match.
 %%
-%% The graphic control extension is always followed by an image. (Technically,
-%% a plain text extension may follow instead, but since such extensions are
-%% rare, they will be ignored.)
+%% The graphics control extension block modifies the rendering properties of
+%% the next encountered image block. However, there may be other blocks in
+%% between this graphics control extension block and the target image.
+%%
+%% By the time a new graphic control extension block is reached, there should
+%% not be an unattached graphic control extension block from before.
 parse_main_blocks(
+  undefined,
   <<
     16#21:8, % extension introducer
     16#f9:8, % graphic control
@@ -666,7 +673,7 @@ parse_main_blocks(
         transparency=ParsedTransparencyIndex
     },
 
-    parse_image_descriptor(GraphicControl, Rest, ParsedData);
+    parse_main_blocks(GraphicControl, Rest, ParsedData);
 
 %% @doc `0x2c` marks the beginning of an image, starting with the image
 %% descriptor.
@@ -675,36 +682,65 @@ parse_main_blocks(
 %% control extension, an image descriptor follows a graphic control extension.
 %% However, an image may not have a graphic control extension at all, so the
 %% image descriptor can be considered the start of its own main block.
-parse_main_blocks(BinData = <<16#2c:8, _/binary>>, ParsedData) ->
-    % Because there's no associated graphic control, the following image will
-    % not have any of its control parameters (such as the transparency index)
-    % specified.
-    GraphicControl = #graphic_control{
-        delay=0,
-        disposal=?DISPOSAL_UNSPECIFIED,
-        transparency=-1
-    },
-
+parse_main_blocks(
+  GraphicControl,
+  BinData = <<16#2c:8, _/binary>>,
+  ParsedData) ->
     parse_image_descriptor(GraphicControl, BinData, ParsedData);
 
 %% @doc `0x21 0xFE` marks the beginning of a comment extension block. All the
 %% bytes in the contained sub-blocks are ASCII characters.
-parse_main_blocks(<<16#21fe:16, BinData/binary>>, ParsedData) ->
+parse_main_blocks(
+  GraphicControl,
+  <<16#21fe:16, BinData/binary>>,
+  ParsedData) ->
     {AllSubBlockData, Rest} = next_sub_block(BinData, <<>>),
 
     Comment = binary_to_list(AllSubBlockData),
     io:format("Comment: ~s~n", [Comment]),
 
-    parse_main_blocks(Rest, ParsedData);
+    parse_main_blocks(GraphicControl, Rest, ParsedData);
+
+%% @doc `0x21 0x01` marks the beginning of a plain text extension block. This
+%% block specifies text that should be rendered on top of the image. No major
+%% renderer seems to support this extension, so this block will be skipped.
+%%
+%% The reason to recognizing this block explicitly is because an active
+%% graphics control extension block can target a plain text extension block.
+%% Thus, if there's an active graphics control extension block and a plain text
+%% extension is encountered, the graphics control extension block should be
+%% dropped.
+parse_main_blocks(
+  _,
+  <<16#2101:16, BinData/binary>>,
+  ParsedData) ->
+    io:format("Found plain text extension. Ignoring~n"),
+
+    {_, Rest} = next_sub_block(BinData, <<>>),
+    parse_main_blocks(undefined, Rest, ParsedData);
 
 %% @doc In general, `0x21` marks the beginning of some extension block. Any
 %% extension block not handled in the above variants of `parse_main_blocks/2`
 %% fall through to here, where all the sub-blocks are read and skipped.
-parse_main_blocks(<<16#21:8, ExtType:8, BinData/binary>>, ParsedData) ->
+parse_main_blocks(
+  GraphicControl,
+  <<16#21:8, ExtType:8, BinData/binary>>,
+  ParsedData) ->
     io:format("Found extension with unknown type: ~b. Ignoring~n", [ExtType]),
 
     {_, Rest} = next_sub_block(BinData, <<>>),
-    parse_main_blocks(Rest, ParsedData).
+    parse_main_blocks(GraphicControl, Rest, ParsedData).
+
+parse_image_descriptor(undefined, BinData, ParsedData) ->
+    parse_image_descriptor(
+        #graphic_control{
+           delay=0,
+           disposal=?DISPOSAL_UNSPECIFIED,
+           transparency=-1
+        },
+        BinData,
+        ParsedData
+    );
 
 parse_image_descriptor(
   #graphic_control{
@@ -761,7 +797,10 @@ parse_image_data(BinData, ParsedData, ParsedImage) ->
     ParsedImageFull = ParsedImage#parsed_img{data=ImageDataDecoded},
     ParsedDataIm = ParsedData#parsed_gif{images=[ParsedImageFull|OldImages]},
 
-    parse_main_blocks(Rest, ParsedDataIm).
+    % Now that the last encountered graphics control extension block (if any)
+    % has been successfully attached to the current image, reset to no active
+    % graphics control extension block.
+    parse_main_blocks(undefined, Rest, ParsedDataIm).
 
 % == MAIN SDL ROUTINES ========================================================
 
