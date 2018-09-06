@@ -552,6 +552,14 @@ lzw_decode(ImageData, LZWMinCodeSize, NumColors) ->
     data=[]
 }).
 
+%% @doc Determine which color table--local or global--is the correct one to use
+%% for this image.
+color_table_for_image(Gif, Image) ->
+    case Image#parsed_img.colors of
+        []         -> Gif#parsed_gif.colors;
+        LocalTable -> LocalTable
+    end.
+
 % == MAIN ROUTINES ============================================================
 
 go([Filename|_]) ->
@@ -784,7 +792,7 @@ parse_local_color_table(BinData, ParsedData, ParsedImage, LCTableSize) ->
 
 parse_image_data(BinData, ParsedData, ParsedImage) ->
     {LZWMinCodeSize, SubBlocks} = lzw_minimum_code_size(BinData),
-    NumColors = length(ParsedData#parsed_gif.colors),
+    NumColors = length(color_table_for_image(ParsedData, ParsedImage)),
 
     {ParsedImageData, Rest} = image_data_all_sub_blocks(SubBlocks),
     ImageDataDecoded = lzw_decode(ParsedImageData, LZWMinCodeSize, NumColors),
@@ -890,10 +898,7 @@ draw_image(ParsedData, [], Zoom) ->
 draw_image(ParsedData, Images, Zoom) ->
     [Image|ImagesRest] = Images,
 
-    ColorTable = case Image#parsed_img.colors of
-        []         -> ParsedData#parsed_gif.colors;
-        LocalTable -> LocalTable
-    end,
+    ColorTable = color_table_for_image(ParsedData, Image),
     paint_pixels(Image, ColorTable, Zoom),
 
     handle_next_event(ParsedData, [Image|ImagesRest], Zoom).
