@@ -126,22 +126,6 @@ global_color_table(BinData, NumColors) ->
 % to this application, which will still require recognzing the blocks and
 % skipping over the contained data.
 
-% The graphics control extension may appear only once, if at all, before a
-% graphic rendering block, but we won't bother checking that.
-read_all_extension_blocks(BinData, Extensions) ->
-    case BinData of
-        <<16#21, _/binary>> ->
-            case extension_block(BinData) of
-                {graphics_control, ParsedGCE, NewBinData} ->
-                    read_all_extension_blocks
-                        (NewBinData, [ParsedGCE|Extensions]);
-                 NewBinData                               ->
-                    read_all_extension_blocks(NewBinData, Extensions)
-            end;
-        _                   ->
-            {Extensions, BinData}
-    end.
-
 % --- Sub-blocks --------------------------------------------------------------
 
 % Both extension blocks and the image data are grouped into data sub-blocks.
@@ -162,6 +146,15 @@ next_sub_block(<<Size:8, Rest/binary>>, SubBlocks) ->
     next_sub_block(RemainingSubBlocks, SubBlocksNew).
 
 % --- Graphics Control Extension ----------------------------------------------
+
+% Most of the extensions are handled in the main parse routines. However, some
+% of the functionality in one of the extensions--the graphics control
+% extension--is specified below.
+
+%% @doc A temporary holding place for the information in the graphics control
+%% extension. This information is later attached directly to the image
+%% immediately following this extension block.
+-record(graphic_control, {delay, disposal, transparency}).
 
 % The first byte in the graphics control extension is a packed byte, the first
 % three bits of which are reserved. Following this are three bits denoting the
@@ -203,51 +196,6 @@ transparency_flag(<<_:7/bits, 1:1>>) ->
     true ;
 transparency_flag(<<_:7/bits, 0:1>>) ->
     false.
-
-% The next byte in the graphics control extension, when not "0", specifies the
-% amount of time to wait before displaying the next image. The value is given
-% in 1/100ths of a second and is counted starting immediately after the image
-% is rendered.
-
-% The next byte is the transparency index. This is relevant only if the
-% transparency index is set in the packed byte mentioned before. If so, any
-% pixels with this index is unmodified when rendering.
-
-% Technically, the block has a size field, and a block terminator, but in this
-% case, the block has a constant size, with a fixed structure.
-extension_block(<<16#21f904:24,
-    Packed:8/bits, DelayTime:16/little, TransparentIndex:8,
-    0:8, Rest/binary>>) ->
-    DisposalMethod = disposal_method(Packed),
-    ParsedTransparencyIndex = case transparency_flag(Packed) of
-        true  -> TransparentIndex;
-        false -> -1
-    end,
-
-    ParsedGCE = {graphics_control_extension,
-                    {disposal    , DisposalMethod         },
-                    {delay       , DelayTime              },
-                    {transparency, ParsedTransparencyIndex}},
-
-    {graphics_control, ParsedGCE, Rest};
-
-% --- Comment Extension -------------------------------------------------------
-
-extension_block(<<16#21fe:16, BinData/binary>>) ->
-    {AllSubBlockData, Rest} = next_sub_block(BinData, <<>>),
-
-    Comment = binary_to_list(AllSubBlockData),
-    io:format("Comment: ~s~n", [Comment]),
-
-    Rest;
-
-% --- Other Extension Blocks --------------------------------------------------
-
-extension_block(<<16#21:8, Type:8, BinData/binary>>) ->
-    io:format("Found extension with unknown type: ~b. Ignoring~n", [Type]),
-
-    {AllSubBlockData, Rest} = next_sub_block(BinData, <<>>),
-    Rest.
 
 % ~~ IMAGE DESCRIPTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -570,18 +518,39 @@ lzw_decode(ImageData, LZWMinCodeSize, NumColors) ->
 
     lists:flatten(lists:reverse(DecodedSequences)).
 
-% == TRAILER ==================================================================
-
-% The final byte of the file constitutes the trailer block, which indicates
-% that no more data follows. The block is always the byte "3b".
-end_of_file(<<16#3b>>) -> true ;
-end_of_file(_        ) -> false.
-
 % == PARSED RECORD STRUCTURE ==================================================
 
--record(parsed_gif, {w, h, color_depth, disposal, delay, transparency,
-    colors=[], images=[]}).
--record(parsed_img, {l, t, w, h, colors=[], data=[]}).
+%% @doc A structure describing the entire GIF file.
+-record(parsed_gif, {
+    w, h,  % the dimensions of the full output
+    color_depth, % bits per pixel
+    % The global color table. Used when there is no local color table for a
+    % given image. May be missing (empty) if all contained images have their
+    % own local color tables.
+    colors=[],
+    % The individual contained images. Usually one per frame of animation.
+    images=[]
+}).
+
+%% @doc A structure describing a single image within the GIF file. These images
+%% are the ones that actually have pixels to be displayed.
+-record(parsed_img, {
+    % The dimensions of the bounding rectangle for this image. When rendering
+    % animations, it's possible to paint over only part of the full canvas.
+    l, t, w, h,  % Left, Top, Width, Height
+
+    disposal, delay, % animation-related metadata
+
+    transparency,  % index that represents a transparent pixel
+
+    % The local color table. If present, used to determine the colors for this
+    % image. Otherwise, the global color table is used.
+    colors=[],
+
+    % The decoded image data, represented as a sequence of indexes into
+    % whichever color table is being used.
+    data=[]
+}).
 
 % == MAIN ROUTINES ============================================================
 
@@ -626,7 +595,7 @@ parse_logical_screen_descriptor(<<Lsd:7/bytes, Rest/binary>>) ->
                 {{gc_table_size, GCTableSize},
                  {bg_index,      BGIndex    }});
         false ->
-            parse_extension_blocks(Rest, ParsedDataWH)
+            parse_main_blocks(Rest, ParsedDataWH)
     end.
 
 parse_global_color_table(BinData, ParsedData,
@@ -640,46 +609,134 @@ parse_global_color_table(BinData, ParsedData,
 
     % TODO: preserve BGIndex
 
-    parse_extension_blocks(Rest, ParsedDataGC).
+    parse_main_blocks(Rest, ParsedDataGC).
 
-parse_extension_blocks(BinData, ParsedData) ->
-    {Extensions, Rest} = read_all_extension_blocks(BinData, []),
-    NewParsedData =
-        case lists:keyfind(graphics_control_extension, 1, Extensions) of
-            {graphics_control_extension,
-                {disposal    , DisposalMethod   },
-                {delay       , DelayTime        },
-                {transparency, TransparencyIndex}} ->
-                ParsedData#parsed_gif{disposal=DisposalMethod,
-                    delay=DelayTime, transparency=TransparencyIndex};
-            false                                  ->
-                ParsedData
-        end,
+%% @doc When the trailer (`0x3B`) is reached, there is no more data to parse.
+parse_main_blocks(<<16#3b>>, ParsedData) ->
+    io:format("Parsed image: ~p~n", [ParsedData]),
+    io:format("Finished parsing image...~n"),
 
-    parse_image_descriptor(Rest, NewParsedData).
+    % One caveat is that the images list is built up in reverse order, due to
+    % efficiency. Now that all the images have been parsed, reverse their
+    % order.
+    #parsed_gif{images=Images} = ParsedData,
+    ParsedData#parsed_gif{images=lists:reverse(Images)};
 
-parse_image_descriptor(BinData, ParsedData) ->
-    Eof = end_of_file(BinData),
-    if Eof ->
-        io:format("Parsed image: ~p~n", [ParsedData]),
-        io:format("Finished parsing image...~n"),
-        ParsedData;
-       true ->
-        <<ImDesc:10/bytes, Rest/binary>> = BinData,
-        {{l, L}, {t, T}, {w, W}, {h, H}} = image_descriptor_dim(ImDesc),
-        ParsedImage = #parsed_img{l=L, t=T, w=W, h=H},
+%% @doc `0x21 0xF9` marks the beginning of a graphic control extension block.
+%%
+%% This block, like all other extensions, contains a sub-block structure.
+%% However, the block is guaranteed to contain one, fixed-length block, so the
+%% entire block can be parsed in a single pattern match.
+%%
+%% The graphic control extension is always followed by an image. (Technically,
+%% a plain text extension may follow instead, but since such extensions are
+%% rare, they will be ignored.)
+parse_main_blocks(
+  <<
+    16#21:8, % extension introducer
+    16#f9:8, % graphic control
+    16#04:8, % sub-block size
 
-        case local_color_table_flag(ImDesc) of
-            true  ->
-                LCTableSize = local_color_table_size(ImDesc),
-                BGIndex     = background_color_index(ImDesc),
+    % The first byte is a packed byte. See the "Graphics Control Extension"
+    % section above for more information about this byte. In particular, the
+    % routines to unpack this byte are defined in that section.
+    Packed:8/bits,
 
-                parse_local_color_table(Rest, ParsedData, ParsedImage,
-                    {{lc_table_size, LCTableSize},
-                     {bg_index,      BGIndex    }});
-            false ->
-                parse_image_data(Rest, ParsedData, ParsedImage)
-        end
+    % When not "0", specifies the amount of time to wait before displaying the
+    % next image. The value is given in 1/100ths of a second and is counted
+    % starting immediately after the image is rendered.
+    DelayTime:16/little,
+
+    % This is relevant only if the transparency index is set in the packed byte
+    % mentioned before. If so, any pixels with this index is unmodified when
+    % rendering.
+    TransparentIndex:8,
+
+    0:8, % block terminator
+    Rest/binary
+  >>,
+  ParsedData) ->
+    DisposalMethod = disposal_method(Packed),
+    ParsedTransparencyIndex = case transparency_flag(Packed) of
+        true  -> TransparentIndex;
+        false -> -1
+    end,
+
+    GraphicControl = #graphic_control{
+        delay=DelayTime,
+        disposal=DisposalMethod,
+        transparency=ParsedTransparencyIndex
+    },
+
+    parse_image_descriptor(GraphicControl, Rest, ParsedData);
+
+%% @doc `0x2c` marks the beginning of an image, starting with the image
+%% descriptor.
+%%
+%% As described in the variant of `parse_main_blocks/2` that matches a graphic
+%% control extension, an image descriptor follows a graphic control extension.
+%% However, an image may not have a graphic control extension at all, so the
+%% image descriptor can be considered the start of its own main block.
+parse_main_blocks(BinData = <<16#2c:8, _/binary>>, ParsedData) ->
+    % Because there's no associated graphic control, the following image will
+    % not have any of its control parameters (such as the transparency index)
+    % specified.
+    GraphicControl = #graphic_control{
+        delay=0,
+        disposal=?DISPOSAL_UNSPECIFIED,
+        transparency=-1
+    },
+
+    parse_image_descriptor(GraphicControl, BinData, ParsedData);
+
+%% @doc `0x21 0xFE` marks the beginning of a comment extension block. All the
+%% bytes in the contained sub-blocks are ASCII characters.
+parse_main_blocks(<<16#21fe:16, BinData/binary>>, ParsedData) ->
+    {AllSubBlockData, Rest} = next_sub_block(BinData, <<>>),
+
+    Comment = binary_to_list(AllSubBlockData),
+    io:format("Comment: ~s~n", [Comment]),
+
+    parse_main_blocks(Rest, ParsedData);
+
+%% @doc In general, `0x21` marks the beginning of some extension block. Any
+%% extension block not handled in the above variants of `parse_main_blocks/2`
+%% fall through to here, where all the sub-blocks are read and skipped.
+parse_main_blocks(<<16#21:8, ExtType:8, BinData/binary>>, ParsedData) ->
+    io:format("Found extension with unknown type: ~b. Ignoring~n", [ExtType]),
+
+    {_, Rest} = next_sub_block(BinData, <<>>),
+    parse_main_blocks(Rest, ParsedData).
+
+parse_image_descriptor(
+  #graphic_control{
+     delay=DelayTime,
+     disposal=DisposalMethod,
+     transparency=TransparencyIndex
+  },
+  <<ImDesc:10/bytes, Rest/binary>>,
+  ParsedData) ->
+    {{l, L}, {t, T}, {w, W}, {h, H}} = image_descriptor_dim(ImDesc),
+    ParsedImage = #parsed_img{
+        l=L,
+        t=T,
+        w=W,
+        h=H,
+        disposal=DisposalMethod,
+        delay=DelayTime,
+        transparency=TransparencyIndex
+    },
+
+    case local_color_table_flag(ImDesc) of
+        true  ->
+            LCTableSize = local_color_table_size(ImDesc),
+            BGIndex     = background_color_index(ImDesc),
+
+            parse_local_color_table(Rest, ParsedData, ParsedImage,
+                {{lc_table_size, LCTableSize},
+                 {bg_index,      BGIndex    }});
+        false ->
+            parse_image_data(Rest, ParsedData, ParsedImage)
     end.
 
 parse_local_color_table(BinData, ParsedData, ParsedImage,
@@ -706,7 +763,7 @@ parse_image_data(BinData, ParsedData, ParsedImage) ->
     ParsedImageFull = ParsedImage#parsed_img{data=ImageDataDecoded},
     ParsedDataIm = ParsedData#parsed_gif{images=[ParsedImageFull|OldImages]},
 
-    parse_image_descriptor(Rest, ParsedDataIm).
+    parse_main_blocks(Rest, ParsedDataIm).
 
 % == MAIN SDL ROUTINES ========================================================
 
@@ -804,7 +861,7 @@ draw_image(ParsedData, Images, Zoom) ->
         []         -> ParsedData#parsed_gif.colors;
         LocalTable -> LocalTable
     end,
-    paint_pixels(ParsedData, Image, ColorTable, Zoom),
+    paint_pixels(Image, ColorTable, Zoom),
 
     handle_next_event(ParsedData, [Image|ImagesRest], Zoom).
 
@@ -836,8 +893,17 @@ change_zoom(OldZoom, ?ZOOM_DECREASE) ->
        true                 -> OldZoom - 1
     end.
 
-paint_pixels(#parsed_gif{transparency=TransparentIndex},
-    #parsed_img{l=L, t=T, w=W, h=H, data=Data}, ColorTable, Zoom) ->
+paint_pixels(
+  #parsed_img{
+     l=L,
+     t=T,
+     w=W,
+     h=H,
+     transparency=TransparentIndex,
+     data=Data
+  },
+  ColorTable,
+  Zoom) ->
     Xs = lists:seq(L, L + W - 1),
     Ys = lists:seq(T, T + H - 1),
 

@@ -34,14 +34,14 @@ Quick Start
 # Install the necessary dependencies (example given for Ubuntu)
 sudo apt install erlang erlang-esdl-dev
 
-# build the application
+# Build the application
 make
 
-# run the application with the demo input file
+# Run the application with the demo input file
 make run
 
-# run the application with a different input file
-# note that there are many bugs, so many files won't work
+# Run the application with a different input file. While many files have been
+# tested, it's likely some file will expose a bug in the program.
 make run IN=gfx/rgb-stripes.gif
 
 # run the tests
@@ -76,29 +76,23 @@ Dependencies
 Current Status
 --------------
 
-There are many bugs remaining in the application. Given that I created this
-application to understand the GIF 89a format and learn some Erlang, I feel that
-I've accomplished my goal. Thus, I *may* incrementally add a feature or fix a
-bug in the future, but please feel free to fork this project and update it.
+Given that I created this application to understand the GIF 89a format and
+learn some Erlang, I feel that I've accomplished my goal. Thus, I *may*
+incrementally add a feature or fix a bug in the future, but please feel free to
+fork this project and update it.
 
 Some of the problems include:
 
-* Incomplete ability to decode GIF files. I've tested with multiple input
-  images, but real-world images often contain data, such as additional
-  extension blocks, that reveal bugs in the decoder.
+* Inability to automatically play animations. This is by design, so far. The
+  frames of an animation are navigable by using the '`n`' or `SPACE` key.
 
-* Untested features: local color table support, whether an animated gif can
-  even be parsed.
+* No support for advanced animation functionality: disposal methods,
+  inter-frame delays, and looping. The latter two fall under the inability to
+  automatically play animations.
 
 * No support for interlacing.
 
-Additionally:
-
 * Inability to decode GIF 87a files. This is by design.
-
-* Inability to display animations. Again, this is by design, so far.
-  Technically, the frames of an animation *should* be navigable by using the
-  '`n`' or `SPACE` key, but this feature is untested.
 
 References
 ----------
