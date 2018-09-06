@@ -557,7 +557,6 @@ lzw_decode(ImageData, LZWMinCodeSize, NumColors) ->
 go([Filename|RestArgs]) ->
     case file:read_file(Filename) of
         {ok, Data}      ->
-            io:format("Raw Data: ~p~n", [Data]),
             ParsedData = parse_data(Data),
             init_sdl(ParsedData);
         {error, Reason} ->
@@ -613,7 +612,6 @@ parse_global_color_table(BinData, ParsedData,
 
 %% @doc When the trailer (`0x3B`) is reached, there is no more data to parse.
 parse_main_blocks(<<16#3b>>, ParsedData) ->
-    io:format("Parsed image: ~p~n", [ParsedData]),
     io:format("Finished parsing image...~n"),
 
     % One caveat is that the images list is built up in reverse order, due to
