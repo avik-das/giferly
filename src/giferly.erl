@@ -554,7 +554,7 @@ lzw_decode(ImageData, LZWMinCodeSize, NumColors) ->
 
 % == MAIN ROUTINES ============================================================
 
-go([Filename|RestArgs]) ->
+go([Filename|_]) ->
     case file:read_file(Filename) of
         {ok, Data}      ->
             ParsedData = parse_data(Data),
