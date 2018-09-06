@@ -763,26 +763,22 @@ parse_image_descriptor(
 
     case local_color_table_flag(ImDesc) of
         true  ->
-            LCTableSize = local_color_table_size(ImDesc),
-            BGIndex     = background_color_index(ImDesc),
-
-            parse_local_color_table(Rest, ParsedData, ParsedImage,
-                {{lc_table_size, LCTableSize},
-                 {bg_index,      BGIndex    }});
+            parse_local_color_table(
+              Rest,
+              ParsedData,
+              ParsedImage,
+              local_color_table_size(ImDesc)
+            );
         false ->
             parse_image_data(Rest, ParsedData, ParsedImage)
     end.
 
-parse_local_color_table(BinData, ParsedData, ParsedImage,
-    {{lc_table_size, LCTableSize},
-     {bg_index     , BGIndex    }}) ->
+parse_local_color_table(BinData, ParsedData, ParsedImage, LCTableSize) ->
     LCTableByteLen = LCTableSize * 3,
     <<BinLCTable:LCTableByteLen/bytes, Rest/binary>> = BinData,
 
     LCTable = local_color_table(BinLCTable, LCTableSize),
     ParsedImageLC = ParsedImage#parsed_img{colors=LCTable},
-
-    % TODO: preserve BGIndex
 
     parse_image_data(Rest, ParsedData, ParsedImageLC).
 
