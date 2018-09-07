@@ -774,6 +774,8 @@ parse_image_descriptor(
   },
   <<ImDesc:10/bytes, Rest/binary>>,
   ParsedData) ->
+    io:format("Found new image~n"),
+
     {{l, L}, {t, T}, {w, W}, {h, H}} = image_descriptor_dim(ImDesc),
     ParsedImage = #parsed_img{
         l=L,
