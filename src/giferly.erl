@@ -499,8 +499,24 @@ lzw_decode_single(Compressed, Decoded, State, Context) ->
     end.
 
 lzw_decode(ImageData, LZWMinCodeSize, NumColors) ->
-    Table = lzw_code_table_new(NumColors),
     CodeSize = LZWMinCodeSize + 1,
+
+    % The minimum allowable code size is 3 (corresponding to a LZW minimum code
+    % size value of 2). This means that the table must contain at least 4
+    % colors, so as to require 3 bits to address the clear and EOI codes in the
+    % table.
+    %
+    % In practice, if the local color table contains two colors, then the extra
+    % two "colors" in the padded table won't actually be referenced by any code
+    % in the code stream. However, they need to be present in the table so that
+    % the clear code is at the correct offset in the table.
+    PaddedNumColors =
+        if
+            NumColors < 4 -> 4;
+            true          -> NumColors
+        end,
+
+    Table = lzw_code_table_new(PaddedNumColors),
 
     DecodedSequences = lzw_decode_single(
       ImageData,
@@ -511,7 +527,7 @@ lzw_decode(ImageData, LZWMinCodeSize, NumColors) ->
           table=Table
       },
       #decompression_context{
-          num_colors=NumColors,
+          num_colors=PaddedNumColors,
           minimum_code_size=CodeSize
       }
     ),
